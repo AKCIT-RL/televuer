@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from .televuer import TeleVuer
 from dataclasses import dataclass, field
 from typing import Literal
@@ -433,6 +434,95 @@ class TeleVuerWrapper:
         
     def render_to_xr(self, img):
         self.tvuer.render_to_xr(img)
-    
+
+    # ==================== Headset-relative wrist poses (for WristsPreProcessor) ====================
+
+    def get_headset_relative_wrist_poses(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (left_wrist, right_wrist) as (4,4) SE3 matrices in z-up world frame,
+        with position expressed relative to the headset and headset yaw compensated.
+
+        This is the **raw pre-calibration format** expected by ``WristsPreProcessor``
+        in ``decoupled_wbc`` — matching exactly what ``PicoStreamer._process_xr_pose()``
+        produces.  It is intentionally different from ``get_tele_data()``, which returns
+        poses already converted to Robot Convention with a waist-frame offset applied.
+
+        Typical usage (SIMPLE ``VuerStreamer``):
+
+        .. code-block:: python
+
+            left_wrist, right_wrist = tv_wrapper.get_headset_relative_wrist_poses()
+            streamer_output.ik_data["left_wrist"]  = left_wrist
+            streamer_output.ik_data["right_wrist"] = right_wrist
+
+        Returns:
+            (left_wrist, right_wrist): each a (4,4) np.ndarray, SE3 matrix in
+            z-up frame, position relative to headset, yaw-compensated.
+        """
+        head_mat  = self.tvuer.head_pose       # (4,4) raw OpenXR y-up
+        left_mat  = self.tvuer.left_arm_pose   # (4,4) raw OpenXR y-up
+        right_mat = self.tvuer.right_arm_pose  # (4,4) raw OpenXR y-up
+
+        left_wrist  = self._openxr_to_zup_headset_relative(left_mat,  head_mat)
+        right_wrist = self._openxr_to_zup_headset_relative(right_mat, head_mat)
+        return left_wrist, right_wrist
+
+    @staticmethod
+    def _openxr_to_zup_headset_relative(controller_mat: np.ndarray, head_mat: np.ndarray) -> np.ndarray:
+        """Convert an OpenXR 4x4 pose matrix to z-up frame, headset-relative with yaw compensation.
+
+        Replicates ``PicoStreamer._process_xr_pose()`` logic, adapted for 4x4
+        matrix input (TeleVuer already stores poses as 4x4, not as pose+quat arrays).
+
+        Steps:
+            1. Convert position and rotation from y-up (OpenXR) to z-up using
+               R_OPENXR_TO_ZUP (same matrix as ``PicoStreamer.R_HEADSET_TO_WORLD``).
+            2. Compute controller position relative to headset (delta in z-up world).
+            3. Extract headset yaw and build an inverse-yaw rotation so the output
+               frame is aligned with absolute world yaw = 0.
+            4. Apply yaw compensation to both position delta and rotation.
+
+        Args:
+            controller_mat: (4,4) SE3 matrix in OpenXR y-up convention.
+            head_mat:       (4,4) SE3 matrix of the headset in OpenXR y-up convention.
+
+        Returns:
+            (4,4) SE3 matrix: controller pose in z-up frame, relative to headset,
+            yaw-compensated.
+        """
+        # R_HEADSET_TO_WORLD from PicoStreamer — converts OpenXR y-up to z-up.
+        # Numerically identical to T_ROBOT_OPENXR[:3,:3] already used in get_tele_data().
+        R_OPENXR_TO_ZUP = np.array([
+            [ 0,  0, -1],
+            [-1,  0,  0],
+            [ 0,  1,  0],
+        ])
+
+        # --- Controller ---
+        ctrl_pos = controller_mat[:3, 3]
+        ctrl_rot = controller_mat[:3, :3]
+        ctrl_pos_zup = R_OPENXR_TO_ZUP @ ctrl_pos
+        ctrl_rot_zup = R_OPENXR_TO_ZUP @ ctrl_rot @ R_OPENXR_TO_ZUP.T
+
+        # --- Headset ---
+        head_pos = head_mat[:3, 3]
+        head_rot = head_mat[:3, :3]
+        head_pos_zup = R_OPENXR_TO_ZUP @ head_pos
+        head_rot_zup = R_OPENXR_TO_ZUP @ head_rot @ R_OPENXR_TO_ZUP.T
+
+        # --- Headset-relative position ---
+        pos_delta = ctrl_pos_zup - head_pos_zup
+
+        # --- Headset yaw compensation ---
+        headset_yaw   = R.from_matrix(head_rot_zup).as_euler("xyz")[2]
+        inv_yaw_rot   = R.from_euler("z", -headset_yaw).as_matrix()
+
+        pos_compensated = inv_yaw_rot @ pos_delta
+        rot_compensated = inv_yaw_rot @ ctrl_rot_zup
+
+        T = np.eye(4)
+        T[:3, :3] = rot_compensated
+        T[:3, 3]  = pos_compensated
+        return T
+
     def close(self):
         self.tvuer.close()

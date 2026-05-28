@@ -349,6 +349,7 @@ class TeleVuer:
                         quality=80,
                         key="background-left",
                         interpolate=True,
+                        position=[0, -0.25, 0],
                     ),
                     ImageBackground(
                         self.img2display[:, self.img_width:],
@@ -360,6 +361,7 @@ class TeleVuer:
                         quality=80,
                         key="background-right",
                         interpolate=True,
+                        position=[0, -0.25, 0],
                     ),
                 ],
                 to="bgChildren",
