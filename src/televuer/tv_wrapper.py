@@ -462,6 +462,17 @@ class TeleVuerWrapper:
         left_mat  = self.tvuer.left_arm_pose   # (4,4) raw OpenXR y-up
         right_mat = self.tvuer.right_arm_pose  # (4,4) raw OpenXR y-up
 
+        # Fallback to default constants if matrices are not valid/uninitialized (e.g., VR not connected yet)
+        det_head = np.linalg.det(head_mat)
+        if not np.isfinite(det_head) or np.isclose(det_head, 0.0, atol=1e-6):
+            head_mat = CONST_HEAD_POSE
+        det_left = np.linalg.det(left_mat)
+        if not np.isfinite(det_left) or np.isclose(det_left, 0.0, atol=1e-6):
+            left_mat = CONST_LEFT_ARM_POSE
+        det_right = np.linalg.det(right_mat)
+        if not np.isfinite(det_right) or np.isclose(det_right, 0.0, atol=1e-6):
+            right_mat = CONST_RIGHT_ARM_POSE
+
         left_wrist  = self._openxr_to_zup_headset_relative(left_mat,  head_mat)
         right_wrist = self._openxr_to_zup_headset_relative(right_mat, head_mat)
         return left_wrist, right_wrist
